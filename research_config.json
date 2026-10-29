@@ -1,0 +1,1 @@
+{"RETRIEVER":"tavily","LANGUAGE":"Traditional Chinese (Taiwan)","REPORT_SOURCE":"web","CONTEXT_FILTER":"keyword","FAST_LLM":"google_genai:gemini-flash-lite-latest","SMART_LLM":"google_genai:gemini-3.7-flash","STRATEGIC_LLM":"google_genai:gemini-3.6-flash","EMBEDDING":"google_genai:gemini-embedding-001","MAX_ITERATIONS":3}

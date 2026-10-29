@@ -1,0 +1,5 @@
+streamlit==1.66.0
+gpt-researcher==0.16.1
+langchain-google-genai==4.4.2
+python-dotenv==1.2.4
+httpx==0.28.1
