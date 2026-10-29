@@ -25,11 +25,23 @@ _SCHEMA = '''CREATE TABLE IF NOT EXISTS research_runs (
 )'''
 _SETTINGS_SCHEMA = 'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)'
 
+# Called with the database path after a connection that changed data is closed (cloud_store backs the file up).
+on_write = None
+
+
+class _Connection(sqlite3.Connection):
+    def close(self):
+        changed = self.total_changes > 0
+        super().close()
+        if changed and on_write:
+            on_write(self.db_path)
+
 
 def _connect(db_path=None):
     path = Path(db_path or DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, factory=_Connection)
+    conn.db_path = path
     conn.row_factory = sqlite3.Row
     conn.execute(_SCHEMA)
     conn.execute(_SETTINGS_SCHEMA)

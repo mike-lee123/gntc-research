@@ -300,12 +300,12 @@ def _patch_llm_text_output():
     GenericLLMProvider._gntc_text_patch = True
 
 
-_KEY_LIKE = re.compile(r'(AIza|AQ\.|tvly-|sk-)[\w.\-]{8,}')
+_KEY_LIKE = re.compile(r'(AIza|AQ\.|tvly-|sk-|sb_secret_|eyJ)[\w.\-]{8,}')
 
 
 def redact(text, overrides=None):
     """Remove API keys (entered, from the environment, or key-shaped strings) from text before logging it."""
-    for value in [*(overrides or {}).values(), *(os.getenv(key, '') for key in KEY_NAMES)]:
+    for value in [*(overrides or {}).values(), *(os.getenv(key, '') for key in (*KEY_NAMES, 'SUPABASE_SERVICE_KEY'))]:
         if value and value.strip() and len(value.strip()) >= 8:
             text = text.replace(value.strip(), '***')
     return _KEY_LIKE.sub('***', text)

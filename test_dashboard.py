@@ -7,6 +7,10 @@ from datetime import date, datetime, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 from pathlib import Path
 
+import httpx
+import streamlit as st
+
+import cloud_store
 import evidence
 import history
 import monitor
@@ -25,15 +29,19 @@ def verifier(reply='[]', error=None):
 
 
 _VERIFIER = patch.object(agent, 'fast_model', side_effect=lambda **kwargs: verifier())
+# A Supabase setting in the local .env must not make the dashboard tests reach Supabase.
+_NO_SUPABASE = patch.dict(os.environ, {'SUPABASE_URL': '', 'SUPABASE_SERVICE_KEY': ''})
 
 
 def setUpModule():
     # No test may reach Gemini: the citation check gets a model that judges nothing unless a test says otherwise.
     _VERIFIER.start()
+    _NO_SUPABASE.start()
 
 
 def tearDownModule():
     _VERIFIER.stop()
+    _NO_SUPABASE.stop()
 
 
 class TempHistoryMixin:
@@ -645,6 +653,113 @@ class DashboardTests(TempHistoryMixin, unittest.TestCase):
         self.assertTrue(any('更新完成' in s.value for s in app.success))
         self.assertEqual(monitor.list_checks(monitor.list_competitors()[0]['id'])[0]['status'], 'baseline')
         self.assertTrue(app.button(key='update_due').disabled)  # nothing due right after an update
+
+
+class FakeStorage:
+    """Stands in for Supabase Storage: holds one object and records uploads."""
+
+    def __init__(self, remote=None, get_error=None, upload_status=200):
+        self.remote, self.get_error, self.upload_status, self.uploads = remote, get_error, upload_status, []
+
+    def get(self, url, headers, timeout):
+        if self.get_error:
+            raise self.get_error
+        request = httpx.Request('GET', url)
+        if self.remote is None:
+            return httpx.Response(400, json={'statusCode': '404', 'error': 'not_found'}, request=request)
+        return httpx.Response(200, content=self.remote, request=request)
+
+    def post(self, url, content, headers, timeout):
+        self.uploads.append({'url': url, 'content': content, 'headers': headers})
+        return httpx.Response(self.upload_status, request=httpx.Request('POST', url))
+
+
+SUPABASE = {'SUPABASE_URL': 'https://demo.supabase.co/', 'SUPABASE_SERVICE_KEY': 'sb_secret_test'}
+
+
+@patch.dict(os.environ, SUPABASE)
+class CloudStoreTests(TempHistoryMixin, unittest.TestCase):
+    def tearDown(self):
+        history.on_write = None
+        cloud_store.last_backup_ok = True
+        super().tearDown()
+
+    def save(self, topic, db_path=None):
+        start = datetime(2026, 10, 29, 9, 0, 0)
+        return history.save_run(topic, 'failed', start, start, error='x', db_path=db_path)
+
+    def database_bytes(self, *topics):
+        path = Path(self._tmp.name) / 'remote.db'
+        for topic in topics:
+            self.save(topic, db_path=path)
+        return path.read_bytes()
+
+    def runs_in(self, data):
+        path = Path(self._tmp.name) / 'uploaded.db'
+        path.write_bytes(data)
+        return [r['topic'] for r in history.list_runs(db_path=path)]
+
+    def test_restores_backup_and_uploads_after_each_write_only(self):
+        storage = FakeStorage(remote=self.database_bytes('雲端舊紀錄'))
+        self.assertEqual(cloud_store.start(client=storage), 'restored')
+        self.assertEqual([r['topic'] for r in history.list_runs()], ['雲端舊紀錄'])
+        self.assertEqual(storage.uploads, [])  # reading never uploads
+        run_id = self.save('新紀錄')
+        self.assertEqual(len(storage.uploads), 1)
+        upload = storage.uploads[0]
+        self.assertEqual(upload['url'], 'https://demo.supabase.co/storage/v1/object/gntc/research_history.db')
+        self.assertEqual(upload['headers']['x-upsert'], 'true')
+        self.assertEqual(self.runs_in(upload['content']), ['新紀錄', '雲端舊紀錄'])
+        history.delete_run(run_id)
+        self.assertEqual(self.runs_in(storage.uploads[-1]['content']), ['雲端舊紀錄'])
+
+    def test_missing_backup_starts_new_and_monitor_writes_are_backed_up(self):
+        storage = FakeStorage()
+        self.assertEqual(cloud_store.start(client=storage), 'new')
+        monitor.add_competitor('MaiAgent')
+        self.assertEqual(len(storage.uploads), 1)
+
+    def test_failed_restore_never_uploads(self):
+        for storage in (FakeStorage(get_error=httpx.ConnectError('down')), FakeStorage(remote=b'<html>error</html>')):
+            history.on_write = None
+            self.assertEqual(cloud_store.start(client=storage), 'error')
+            self.save('只存在本機')
+            self.assertEqual(storage.uploads, [])  # an empty database must not overwrite the backup
+
+    def test_failed_upload_keeps_local_data(self):
+        storage = FakeStorage(upload_status=500)
+        cloud_store.start(client=storage)
+        self.save('本機仍保存')
+        self.assertFalse(cloud_store.last_backup_ok)
+        self.assertEqual([r['topic'] for r in history.list_runs()], ['本機仍保存'])
+
+    def test_other_databases_and_missing_settings(self):
+        storage = FakeStorage()
+        cloud_store.start(client=storage)
+        self.save('其他資料庫', db_path=Path(self._tmp.name) / 'other.db')
+        self.assertEqual(storage.uploads, [])
+        history.on_write = None
+        with patch.dict(os.environ, {'SUPABASE_SERVICE_KEY': ''}):
+            self.assertEqual(cloud_store.start(client=storage), 'off')
+        self.assertIsNone(history.on_write)
+
+    def test_supabase_key_is_redacted(self):
+        self.assertNotIn('sb_secret_test', agent.redact('headers: apikey=sb_secret_test'))
+
+    @patch.dict(os.environ, dict(KEYS, GNTC_CLOUD='1'))
+    def test_dashboard_shows_backup_status(self):
+        os.environ.pop('APP_PASSWORD', None)
+        # A failed restore leaves the data in temporary storage, so the temporary-storage warning stays.
+        for state, temporary, check in (
+                ('restored', False, lambda app: any('自動備份到 Supabase' in c.value for c in app.sidebar.caption)),
+                ('error', True, lambda app: any('無法從 Supabase 還原' in e.value for e in app.sidebar.error))):
+            st.cache_resource.clear()
+            with patch.object(cloud_store, 'start', return_value=state):
+                app = AppTest.from_file(str(Path(__file__).parent / 'app.py'), default_timeout=30).run()
+            self.assertFalse(app.exception)
+            self.assertTrue(check(app), state)
+            self.assertEqual(any('暫存空間' in w.value for w in app.sidebar.warning), temporary, state)
+        st.cache_resource.clear()
 
 
 SOURCES = [{'url': 'https://a.tw/news', 'title': 'A 新聞', 'date': '2026-09', 'excerpt': '', 'cited': True, 'citations': []},

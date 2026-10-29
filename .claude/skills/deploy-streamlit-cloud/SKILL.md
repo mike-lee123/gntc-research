@@ -21,7 +21,7 @@ Streamlit Cloud 監看 GitHub 的 `main` 分支：push 成功就會自動重新�
    - `.env`、`.streamlit/secrets.toml`、`data/`、`backups/`、`outputs/` 都沒有出現在變更清單裡（`.gitignore` 已經排除它們，出現了就表示規則被改壞了）。
    - 金鑰掃描沒有結果：
      ```powershell
-     git grep -nI --untracked -E "AIza[0-9A-Za-z_-]{20,}|tvly-[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}"
+     git grep -nI --untracked -E "AIza[0-9A-Za-z_-]{20,}|tvly-[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{30,}\.eyJ"
      ```
      有結果就停下來，把檔名告訴使用者，不要顯示金鑰本身。
 
@@ -39,5 +39,5 @@ Repo 裡沒有真正的 Secrets；雲端生效的是 Streamlit Cloud 的 **App s
 - **Python 版本必須選 3.12**（Advanced settings，只能在建立 app 時選；選錯要刪掉 app 重建）。
 - **`APP_PASSWORD` 的規則**：Secrets 裡的 `GOOGLE_API_KEY`／`TAVILY_API_KEY` 留空時可以不設密碼，訪客只能用自己的金鑰；只要填了金鑰，就必須設定 `APP_PASSWORD`，否則任何拿到網址的人都會用掉使用者的額度。
 - **網址是永久的**，但大約 12 小時沒人使用會休眠，打開後按「Yes, get this app back up」等約 30 秒恢復。
-- **雲端資料不會保存**：`data/` 的研究歷史在重新啟動或休眠喚醒後清空；也沒有每週自動排程，競品監測要手動按「更新」。
+- **雲端資料**：沒有設定 Supabase 時，`data/` 的研究歷史在重新啟動或休眠喚醒後清空；設定 `SUPABASE_URL`／`SUPABASE_SERVICE_KEY` 後會自動備份（步驟見 README「用 Supabase 保留雲端資料」）。雲端沒有每週自動排程，競品監測要手動按「更新」。
 - 部署失敗時，請使用者從「Manage app」複製日誌貼上，並先確認日誌裡沒有金鑰。

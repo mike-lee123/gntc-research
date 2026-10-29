@@ -87,11 +87,27 @@ Register-ScheduledTask -TaskName 'GNTC Competitor Monitor' -Action $action -Trig
 4. Deploy 後可在 App settings 自訂網址（`https://名稱.streamlit.app`）。之後 push 到 GitHub 會自動重新部署。
 
 雲端版的限制：
-- 根層級 Secrets 會成為環境變數；`app.py` 也會把 `GOOGLE_API_KEY`、`TAVILY_API_KEY`、`APP_PASSWORD`、`GNTC_CLOUD` 從 `st.secrets` 複製到環境變數（已存在的不覆蓋）。
+- 根層級 Secrets 會成為環境變數；`app.py` 也會把 `GOOGLE_API_KEY`、`TAVILY_API_KEY`、`APP_PASSWORD`、`GNTC_CLOUD`、`SUPABASE_*` 從 `st.secrets` 複製到環境變數（已存在的不覆蓋）。
 - 設定 `APP_PASSWORD` 後需輸入密碼才能使用（以 `hmac.compare_digest` 比對）。公開網址沒有密碼時，任何人都能用掉 Secrets 裡的 API 額度；不設密碼時建議 Secrets 不放金鑰，讓使用者在左側欄填自己的金鑰。
 - 排查失敗：研究失敗時，錯誤訊息與錯誤類型顯示在狀態框外；完整 traceback（金鑰已遮蔽）寫入伺服器 Logs（Manage app → Logs）。左側欄「測試金鑰」：Gemini 只查詢模型清單（不耗額度），Tavily 執行一次搜尋（使用 1 次搜尋額度）。GPT Researcher 遇到無效的 Tavily 金鑰不會報錯，只會「找不到來源」，所以「未取得可用的網路來源」時請先測試金鑰。
 - `GNTC_CLOUD = "1"` 時停用「儲存到 .env」（共用伺服器上會變成所有訪客的預設金鑰），並在側欄提示資料是暫存的。
-- 檔案系統是暫存的：App 閒置休眠、重新啟動或重新部署後，SQLite 研究歷史、競品清單、公司背景會清空，需重新設定。要永久保存需改用外部資料庫（尚未實作）。
+- 檔案系統是暫存的：App 閒置休眠、重新啟動或重新部署後，SQLite 研究歷史、競品清單、公司背景會清空。要保留資料，請設定下方的 Supabase 備份。
+
+### 用 Supabase 保留雲端資料（選用）
+
+設定後，`cloud_store.py` 會在 App 啟動時從 Supabase Storage 下載資料庫檔，每次寫入（研究、刪除、競品清單、公司背景、監測更新）後再上傳一次。資料仍是同一個 SQLite 檔，不需要改資料表。
+
+1. 到 https://supabase.com 建立免費專案（地區建議選 Tokyo 或 Singapore）。
+2. 左側「Storage」→「New bucket」，名稱 `gntc`，**不要勾選 Public**。
+3. 「Project Settings」→「API」複製 Project URL 與 `service_role`（或 Secret）金鑰，貼到 Streamlit Secrets 的 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`（範本見 `.streamlit/secrets.toml.example`），然後重新啟動 App。
+4. 側欄顯示「會自動備份到 Supabase」就是成功了。
+
+注意：
+- `SUPABASE_SERVICE_KEY` 能讀寫整個 Supabase 專案，只放在 Streamlit Secrets，不可 commit；日誌中會被遮蔽。
+- 啟動時下載失敗，側欄會顯示錯誤，而且本次**不會上傳**，避免空白資料庫覆蓋既有備份；修正設定後重新啟動 App 即可。
+- 上傳失敗時資料仍保存在本次的暫存空間，下次寫入會再試一次。
+- 免費專案連續約一週沒有使用可能被暫停，需到 Supabase 後台恢復（以官網說明為準）。
+- 本機沒有設定 Supabase 時完全不受影響；本機與雲端的資料仍互不相通。
 - 沒有 Windows 排程，競品監測需手動更新；本機與雲端的資料互不相通。
 - 免費方案的 App 一段時間沒人使用會休眠，下次開啟時需等候喚醒。
 

@@ -4,6 +4,7 @@ from datetime import datetime
 
 import streamlit as st
 
+import cloud_store
 import history
 import monitor
 import registry
@@ -394,7 +395,7 @@ def load_streamlit_secrets():
         secrets = dict(st.secrets)
     except Exception:  # no secrets file: local use with .env
         return
-    for name in (*KEY_NAMES, 'APP_PASSWORD', 'GNTC_CLOUD'):
+    for name in (*KEY_NAMES, 'APP_PASSWORD', 'GNTC_CLOUD', *cloud_store.SETTING_NAMES):
         value = secrets.get(name)
         if isinstance(value, (str, int, bool)) and str(value).strip() and not os.getenv(name):
             os.environ[name] = str(value).strip()
@@ -417,11 +418,18 @@ def require_password():
     st.stop()
 
 
+@st.cache_resource(show_spinner='正在從 Supabase 還原研究歷史…')
+def start_cloud_backup():
+    """Once per server process: restore the Supabase backup before anything reads the database."""
+    return cloud_store.start()
+
+
 st.set_page_config(page_title='GNTC AI Research Dashboard', page_icon='🔎', layout='wide')
 load_streamlit_secrets()
 # Cloud mode: shared server with a temporary file system.
 CLOUD = os.getenv('GNTC_CLOUD', '').strip().lower() in ('1', 'true', 'yes')
 SOURCE_TEXT = {'session': '本次填寫', 'env': '雲端 Secrets' if CLOUD else '.env／環境變數'}
+BACKUP = start_cloud_backup()
 require_password()
 with st.sidebar:
     st.title('GNTC Workspace')
@@ -450,7 +458,13 @@ with st.sidebar:
         kind, message = st.session_state.pop('key_message')
         getattr(st, kind)(message)
     st.caption('不會顯示已儲存的金鑰內容。')
-    if CLOUD:
+    if BACKUP == 'error':
+        st.error('無法從 Supabase 還原研究歷史，本次不會備份，以免覆蓋既有備份。請確認 Supabase 設定後重新啟動 App。')
+    elif BACKUP != 'off' and not cloud_store.last_backup_ok:
+        st.warning('最近一次備份到 Supabase 失敗，新資料目前只存在暫存空間；下次儲存時會再試。')
+    if BACKUP in ('restored', 'new'):
+        st.caption('研究歷史、競品清單與公司背景會自動備份到 Supabase，App 重新啟動後仍會保留。')
+    elif CLOUD:
         st.warning('雲端版的研究歷史、競品清單與公司背景存在暫存空間，App 重新啟動（例如閒置休眠、重新部署）後可能清空。'
                    '重要報告請下載保存。')
 

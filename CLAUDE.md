@@ -12,14 +12,15 @@ Streamlit 市場研究／公司分析／競品監測工具。引擎：GPT Resear
 - `research_agent.py`：研究流程、提示詞（REPORT_PROMPT／COMPANY_PROMPT）、金鑰處理、錯誤訊息、額度偵測（QuotaGuard）
 - `evidence.py`：來源日期推測、摘錄、〔待驗證〕標記（規則判斷，不是 AI）
 - `registry.py`：經濟部商工登記開放資料 API（免金鑰）
-- `history.py`：SQLite 研究歷史（`data/research_history.db`）
+- `history.py`：SQLite 研究歷史（`data/research_history.db`）；寫入後呼叫 `on_write`
+- `cloud_store.py`：設定 `SUPABASE_URL`／`SUPABASE_SERVICE_KEY` 時，啟動時從 Supabase Storage 還原資料庫檔、每次寫入後上傳；還原失敗就不上傳
 - `monitor.py`／`monitor_cli.py`：競品監測與 Windows 排程入口
 - `app.py`：Streamlit 介面
 
 ## 必須遵守的規則
 - **語言**：所有 UI 文字、報告、錯誤訊息一律用臺灣繁體中文（臺灣用語，例如「資料」「網址」「金鑰」「伺服器」，不用「數據庫」「鏈接」「密鑰」「服務器」）。
 - **不洩漏金鑰**：絕不把例外原文顯示給使用者或寫入資料庫，一律用 `research_agent.error_message(exc)`；要記錄 traceback 時用 `log_failure()`（會遮蔽金鑰）。
-- **測試不打真實 API**：GPTResearcher、Gemini、Tavily、經濟部 API 一律 mock（參考 `FakeRegistryClient` 與 `ResearchTests.fake`）。
+- **測試不打真實 API**：GPTResearcher、Gemini、Tavily、經濟部 API、Supabase 一律 mock（參考 `FakeRegistryClient`、`FakeStorage` 與 `ResearchTests.fake`）。
 - **測試不碰真實資料庫**：用 `TempHistoryMixin`，不要寫入 `data/`。
 - **資料庫升級**：新增欄位時，在 `_connect()` 用 `ALTER TABLE ... ADD COLUMN` 升級舊資料庫，並加一個舊資料庫升級的測試。不可刪除或改名既有欄位。
 - **官方資料不經 AI 改寫**：`registry.to_markdown()` 的內容在 `mark_unverified` 之後才加入報告，不可讓模型改寫。
