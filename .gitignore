@@ -11,3 +11,7 @@ backups/
 *.log
 data/
 .vscode/
+
+# Documents holding API keys, and Office lock files
+*API-Key*
+~$*
