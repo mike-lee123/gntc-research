@@ -83,7 +83,7 @@ Register-ScheduledTask -TaskName 'GNTC Competitor Monitor' -Action $action -Trig
 
 1. 用 GitHub Desktop「File → Add local repository」選這個資料夾，建立第一個 commit（`.gitignore` 已排除 `.env`、`data/`、`outputs/`、`backups/`、`.venv/`、`.vscode/`），再「Publish repository」到自己的 GitHub，建議勾選 **Private**。
 2. 到 https://share.streamlit.io 用 GitHub 登入 →「Create app」→ 選這個 repository、branch `main`、Main file `app.py`。
-3. 「Advanced settings」選 **Python 3.12**，Secrets 依 `.streamlit/secrets.toml.example` 填寫（至少 `APP_PASSWORD` 與 `GNTC_CLOUD = "1"`）。
+3. 「Advanced settings」選 **Python 3.12**，Secrets 依 `.streamlit/secrets.toml.example` 填寫（至少 `GNTC_CLOUD = "1"`；Secrets 填了金鑰時必須同時設定 `APP_PASSWORD`）。
 4. Deploy 後可在 App settings 自訂網址（`https://名稱.streamlit.app`）。之後 push 到 GitHub 會自動重新部署。
 
 雲端版的限制：
