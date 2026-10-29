@@ -8,6 +8,7 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -20,16 +21,21 @@ OBJECT_NAME = 'research_history.db'
 TIMEOUT_SECONDS = 30
 _SQLITE_HEADER = b'SQLite format 3\x00'
 _LOCK = threading.Lock()
-last_backup_ok = True
+TAIWAN = timezone(timedelta(hours=8))  # the cloud server runs on UTC
+last_backup = None  # {'at': Taiwan time, 'size': bytes} of the latest successful upload in this process
+last_error = ''  # why the latest upload failed; '' after a success
 
 
 def configured():
     return bool(os.getenv('SUPABASE_URL', '').strip() and os.getenv('SUPABASE_SERVICE_KEY', '').strip())
 
 
+def _bucket():
+    return os.getenv('SUPABASE_BUCKET', '').strip() or DEFAULT_BUCKET
+
+
 def _object_url():
-    bucket = os.getenv('SUPABASE_BUCKET', '').strip() or DEFAULT_BUCKET
-    return f'{os.environ["SUPABASE_URL"].strip().rstrip("/")}/storage/v1/object/{bucket}/{OBJECT_NAME}'
+    return f'{os.environ["SUPABASE_URL"].strip().rstrip("/")}/storage/v1/object/{_bucket()}/{OBJECT_NAME}'
 
 
 def _headers():
@@ -76,12 +82,34 @@ def start(db_path=None, client=None):
     return state
 
 
+def _failure_reason(exc):
+    """A message for the user; never the provider's text, which can echo request details."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.json()
+        except ValueError:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        code = str(body.get('statusCode') or exc.response.status_code)
+        message = f'{body.get("error", "")} {body.get("message", "")}'.lower()
+        if 'bucket' in message and 'not found' in message:
+            return (f'找不到名為「{_bucket()}」的 bucket。請在 Supabase 的 Storage 建立（Public 保持關閉），'
+                    '或在 Secrets 設定 SUPABASE_BUCKET。')
+        if code in ('401', '403') or any(word in message for word in ('unauthorized', 'security policy', 'jwt')):
+            return '金鑰沒有寫入權限。請改用 Secret key（sb_secret_ 開頭）或 service_role，不要用 publishable／anon。'
+        return f'Supabase 回應 HTTP {exc.response.status_code}，請稍後再試。'
+    if isinstance(exc, httpx.HTTPError):
+        return '無法連線到 Supabase，請確認 SUPABASE_URL 是否正確。'
+    return '讀取本機資料庫失敗。'
+
+
 def backup(db_path, client=None):
     """Upload a consistent snapshot of the database. Never raises: the data is still saved locally."""
-    global last_backup_ok
+    global last_backup, last_error
     with _LOCK:
         try:
-            with closing(sqlite3.connect(db_path)) as conn:
+            # history._connect creates the tables first, so even an unused database uploads as a valid file.
+            with closing(history._connect(db_path)) as conn:
                 data = conn.serialize()
             response = (client or httpx).post(
                 _object_url(), content=data, timeout=TIMEOUT_SECONDS,
@@ -89,7 +117,7 @@ def backup(db_path, client=None):
             response.raise_for_status()
         except (httpx.HTTPError, sqlite3.Error) as exc:
             logging.getLogger('gntc').warning('Supabase 備份失敗（%s）', type(exc).__name__)
-            last_backup_ok = False
+            last_error = _failure_reason(exc)
             return False
-    last_backup_ok = True
+    last_backup, last_error = {'at': datetime.now(TAIWAN), 'size': len(data)}, ''
     return True

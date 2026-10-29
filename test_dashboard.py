@@ -658,8 +658,9 @@ class DashboardTests(TempHistoryMixin, unittest.TestCase):
 class FakeStorage:
     """Stands in for Supabase Storage: holds one object and records uploads."""
 
-    def __init__(self, remote=None, get_error=None, upload_status=200):
-        self.remote, self.get_error, self.upload_status, self.uploads = remote, get_error, upload_status, []
+    def __init__(self, remote=None, get_error=None, upload_status=200, upload_json=None, upload_error=None):
+        self.remote, self.get_error, self.uploads = remote, get_error, []
+        self.upload_status, self.upload_json, self.upload_error = upload_status, upload_json, upload_error
 
     def get(self, url, headers, timeout):
         if self.get_error:
@@ -671,7 +672,9 @@ class FakeStorage:
 
     def post(self, url, content, headers, timeout):
         self.uploads.append({'url': url, 'content': content, 'headers': headers})
-        return httpx.Response(self.upload_status, request=httpx.Request('POST', url))
+        if self.upload_error:
+            raise self.upload_error
+        return httpx.Response(self.upload_status, json=self.upload_json, request=httpx.Request('POST', url))
 
 
 SUPABASE = {'SUPABASE_URL': 'https://demo.supabase.co/', 'SUPABASE_SERVICE_KEY': 'sb_secret_test'}
@@ -681,7 +684,7 @@ SUPABASE = {'SUPABASE_URL': 'https://demo.supabase.co/', 'SUPABASE_SERVICE_KEY':
 class CloudStoreTests(TempHistoryMixin, unittest.TestCase):
     def tearDown(self):
         history.on_write = None
-        cloud_store.last_backup_ok = True
+        cloud_store.last_backup, cloud_store.last_error = None, ''
         super().tearDown()
 
     def save(self, topic, db_path=None):
@@ -726,12 +729,31 @@ class CloudStoreTests(TempHistoryMixin, unittest.TestCase):
             self.save('只存在本機')
             self.assertEqual(storage.uploads, [])  # an empty database must not overwrite the backup
 
-    def test_failed_upload_keeps_local_data(self):
+    def test_failed_upload_keeps_local_data_and_explains_why(self):
         storage = FakeStorage(upload_status=500)
         cloud_store.start(client=storage)
         self.save('本機仍保存')
-        self.assertFalse(cloud_store.last_backup_ok)
+        self.assertIn('HTTP 500', cloud_store.last_error)
+        self.assertIsNone(cloud_store.last_backup)
         self.assertEqual([r['topic'] for r in history.list_runs()], ['本機仍保存'])
+        cases = ((FakeStorage(upload_status=400, upload_json={'statusCode': '404', 'error': 'Bucket not found',
+                                                              'message': 'Bucket not found'}), '「gntc」的 bucket'),
+                 (FakeStorage(upload_status=400, upload_json={'statusCode': '403', 'error': 'Unauthorized',
+                                                              'message': 'new row violates row-level security policy'}),
+                  '沒有寫入權限'),
+                 (FakeStorage(upload_error=httpx.ConnectError('down')), 'SUPABASE_URL'))
+        for failing, reason in cases:
+            self.assertFalse(cloud_store.backup(history.DB_PATH, client=failing))
+            self.assertIn(reason, cloud_store.last_error)
+        self.assertTrue(cloud_store.backup(history.DB_PATH, client=FakeStorage()))
+        self.assertEqual(cloud_store.last_error, '')
+        self.assertGreater(cloud_store.last_backup['size'], 0)
+
+    def test_unused_database_uploads_as_valid_file(self):
+        storage = FakeStorage()
+        cloud_store.start(client=storage)
+        self.assertTrue(cloud_store.backup(history.DB_PATH, client=storage))
+        self.assertEqual(self.runs_in(storage.uploads[0]['content']), [])  # restorable, not an empty file
 
     def test_other_databases_and_missing_settings(self):
         storage = FakeStorage()
@@ -759,6 +781,45 @@ class CloudStoreTests(TempHistoryMixin, unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertTrue(check(app), state)
             self.assertEqual(any('暫存空間' in w.value for w in app.sidebar.warning), temporary, state)
+        st.cache_resource.clear()
+
+    @patch.dict(os.environ, KEYS)
+    def test_backup_now_button_reports_result_at_once(self):
+        os.environ.pop('APP_PASSWORD', None)
+
+        def fake_backup(path, outcome):
+            if outcome:
+                cloud_store.last_backup, cloud_store.last_error = {'at': datetime(2026, 10, 29, 14, 32), 'size': 12700}, ''
+            else:
+                cloud_store.last_error = '金鑰沒有寫入權限。'
+            return outcome
+
+        st.cache_resource.clear()
+        with patch.object(cloud_store, 'start', return_value='new'):
+            app = AppTest.from_file(str(Path(__file__).parent / 'app.py'), default_timeout=30).run()
+            app.radio(key='page').set_value('API 設定').run()
+            self.assertTrue(any('還沒有備份' in c.value for c in app.caption))
+            with patch.object(cloud_store, 'backup', side_effect=lambda path: fake_backup(path, False)):
+                app.button(key='backup_now').click().run()
+            self.assertIn('沒有寫入權限', app.error[0].value)
+            self.assertTrue(any('沒有寫入權限' in w.value for w in app.sidebar.warning))  # same run, not the next one
+            with patch.object(cloud_store, 'backup', side_effect=lambda path: fake_backup(path, True)) as backup:
+                app.button(key='backup_now').click().run()
+            backup.assert_called_once_with(history.DB_PATH)
+            self.assertFalse(app.exception)
+            self.assertIn('2026-10-29 14:32:00', app.success[0].value)
+            self.assertIn('12.4 KB', app.success[0].value)
+            self.assertFalse(any('備份到 Supabase 失敗' in w.value for w in app.sidebar.warning))
+        st.cache_resource.clear()
+
+    def test_backup_section_when_not_configured(self):
+        st.cache_resource.clear()
+        with patch.dict(os.environ, {'SUPABASE_URL': ''}):
+            app = AppTest.from_file(str(Path(__file__).parent / 'app.py'), default_timeout=30).run()
+            app.radio(key='page').set_value('API 設定').run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any('尚未設定' in i.value for i in app.info))
+        self.assertNotIn('backup_now', [b.key for b in app.button])
         st.cache_resource.clear()
 
 

@@ -16,3 +16,5 @@ data/
 *API-Key*
 ~$*
 ~*.tmp
+# Logs downloaded from Streamlit Cloud (Manage app)
+logs-*.txt

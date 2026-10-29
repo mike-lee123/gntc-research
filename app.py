@@ -387,6 +387,42 @@ def page_settings():
             '多人同時使用同一台伺服器時，研究會依序執行，避免互相使用到對方的金鑰。')
     st.link_button('取得 Gemini API Key（Google AI Studio）', 'https://aistudio.google.com/apikey')
     st.link_button('取得 Tavily API Key', 'https://app.tavily.com/')
+    backup_settings()
+
+
+def backup_settings():
+    st.subheader('Supabase 備份')
+    if BACKUP == 'off':
+        st.info('尚未設定。在 Secrets 設定 SUPABASE_URL 與 SUPABASE_SERVICE_KEY 後，研究歷史、競品清單與公司背景'
+                '會備份到 Supabase，App 重新啟動後仍會保留（設定方式見 README）。')
+        return
+    if BACKUP == 'error':
+        st.error('啟動時無法從 Supabase 還原，為了避免覆蓋既有備份，本次不會備份。請確認 Supabase 設定後重新啟動 App。')
+        return
+    if st.button('立即備份並檢查', key='backup_now'):
+        with st.spinner('上傳到 Supabase…'):
+            cloud_store.backup(history.DB_PATH)
+    if cloud_store.last_error:
+        st.error('最近一次備份失敗：' + cloud_store.last_error)
+    if cloud_store.last_backup:
+        done = cloud_store.last_backup
+        st.success(f'最近一次備份：{done["at"]:%Y-%m-%d %H:%M:%S}（臺灣時間），{done["size"] / 1024:.1f} KB')
+    elif not cloud_store.last_error:
+        st.caption('App 這次啟動後還沒有備份。儲存研究、公司背景或競品清單時會自動備份，也可以按上方按鈕立即備份。')
+    st.caption('啟動時已從 Supabase 還原既有備份。' if BACKUP == 'restored' else '啟動時 Supabase 上還沒有備份，從空白開始。')
+
+
+def sidebar_backup_notice():
+    if BACKUP == 'error':
+        st.error('無法從 Supabase 還原研究歷史，本次不會備份，以免覆蓋既有備份。請確認 Supabase 設定後重新啟動 App。')
+    elif BACKUP != 'off' and cloud_store.last_error:
+        st.warning('最近一次備份到 Supabase 失敗，新資料目前只存在暫存空間：' + cloud_store.last_error)
+    if BACKUP in ('restored', 'new'):
+        st.caption('研究歷史、競品清單與公司背景會自動備份到 Supabase，App 重新啟動後仍會保留。'
+                   '備份狀態見「API 設定」。')
+    elif CLOUD:
+        st.warning('雲端版的研究歷史、競品清單與公司背景存在暫存空間，App 重新啟動（例如閒置休眠、重新部署）後可能清空。'
+                   '重要報告請下載保存。')
 
 
 def load_streamlit_secrets():
@@ -458,15 +494,6 @@ with st.sidebar:
         kind, message = st.session_state.pop('key_message')
         getattr(st, kind)(message)
     st.caption('不會顯示已儲存的金鑰內容。')
-    if BACKUP == 'error':
-        st.error('無法從 Supabase 還原研究歷史，本次不會備份，以免覆蓋既有備份。請確認 Supabase 設定後重新啟動 App。')
-    elif BACKUP != 'off' and not cloud_store.last_backup_ok:
-        st.warning('最近一次備份到 Supabase 失敗，新資料目前只存在暫存空間；下次儲存時會再試。')
-    if BACKUP in ('restored', 'new'):
-        st.caption('研究歷史、競品清單與公司背景會自動備份到 Supabase，App 重新啟動後仍會保留。')
-    elif CLOUD:
-        st.warning('雲端版的研究歷史、競品清單與公司背景存在暫存空間，App 重新啟動（例如閒置休眠、重新部署）後可能清空。'
-                   '重要報告請下載保存。')
 
 st.title('GNTC AI Research Dashboard')
 if page == 'API 設定':
@@ -477,3 +504,6 @@ elif page == '競品監測':
     page_monitor()
 else:
     page_research()
+# After the page ran, so a backup that failed during this run is reported at once.
+with st.sidebar:
+    sidebar_backup_notice()
